@@ -28,11 +28,14 @@ public class UploadResult
     /// <summary>整体是否成功（上传 + 链接可访问）</summary>
     public bool     Success         { get; set; }
 
-    /// <summary>postimg.cc 页面链接</summary>
+    /// <summary>postimg.cc 页面链接或解析后的最终图片链接</summary>
     public string?  ImageUrl        { get; set; }
 
-    /// <summary>图片直链（image 字段，与 url 相同或衍生）</summary>
+    /// <summary>图片直链（从 HTML 解析出的原始后缀 URL）</summary>
     public string?  DirectImageUrl  { get; set; }
+
+    /// <summary>原始上传返回的 HTML 页面链接</summary>
+    public string?  PageUrl         { get; set; }
 
     /// <summary>链接可访问性校验是否通过</summary>
     public bool     LinkAccessible  { get; set; }
@@ -114,7 +117,9 @@ public static class UploadValidator
     public static bool IsValidPostimgUrl(string? url) =>
         !string.IsNullOrWhiteSpace(url) &&
         (url.StartsWith("https://postimg.cc/", StringComparison.OrdinalIgnoreCase) ||
-         url.StartsWith("http://postimg.cc/",  StringComparison.OrdinalIgnoreCase));
+         url.StartsWith("http://postimg.cc/",  StringComparison.OrdinalIgnoreCase) ||
+         url.StartsWith("https://i.postimg.cc/", StringComparison.OrdinalIgnoreCase) ||
+         url.StartsWith("http://i.postimg.cc/",  StringComparison.OrdinalIgnoreCase));
 
     internal static UploadResult Fail(FailureReason reason, string message) =>
         new() { Success = false, ErrorMessage = $"失败原因: {reason} — {message}" };
@@ -390,12 +395,28 @@ public class PostImageClient : IDisposable
             return result;
         }
 
-        result.ImageUrl       = apiResp.Url;
-        result.DirectImageUrl = apiResp.Image ?? apiResp.Url;
+        var pageUrl = apiResp.Url!;
+        result.PageUrl = pageUrl;
 
-        // ── 校验 5：主动验证链接可访问性 ──────────────────────────────────────
-        Log($"  → 正在验证链接可访问性: {result.ImageUrl}");
+        Log($"  → 正在请求页面 HTML 以解析原始图片后缀的 URL: {pageUrl}");
         var verifySw = System.Diagnostics.Stopwatch.StartNew();
+
+        // 1. 请求 pageUrl 并从 HTML 解析出 i.postimg.cc 图片直链
+        (var directUrl, var parseError) = await FetchAndParseDirectUrlAsync(pageUrl, ct);
+        if (parseError is not null || directUrl is null)
+        {
+            verifySw.Stop();
+            result.VerifyElapsed = verifySw.Elapsed;
+            result.Success = false;
+            result.ErrorMessage = $"失败原因: {FailureReason.InvalidResponseUrl} — {parseError}";
+            return result;
+        }
+
+        result.DirectImageUrl = directUrl;
+        result.ImageUrl = directUrl; // 最终返回原始图片后缀的链接
+
+        // 2. 主动验证该直链的可访问性
+        Log($"  → 正在验证直链可访问性: {result.ImageUrl}");
         (result.LinkAccessible, var accessError) =
             await VerifyLinkAsync(result.ImageUrl!, ct);
         verifySw.Stop();
@@ -405,12 +426,12 @@ public class PostImageClient : IDisposable
         {
             result.Success      = false;
             result.ErrorMessage = $"失败原因: {FailureReason.LinkNotAccessible} — " +
-                                  $"图片链接无法访问: {accessError}";
+                                  $"图片直链无法访问: {accessError}";
             return result;
         }
 
         // ── 全部通过 ──────────────────────────────────────────────────────────
-        Log($"  ✓ 链接验证通过（耗时 {result.VerifyElapsed.TotalSeconds:F2}s）");
+        Log($"  ✓ 直链验证通过（耗时 {result.VerifyElapsed.TotalSeconds:F2}s）");
         result.Success = true;
         return result;
     }
@@ -486,6 +507,61 @@ public class PostImageClient : IDisposable
         ".tiff" or ".tif" => "image/tiff",
         _                 => "image/png",
     };
+
+    private async Task<(string? directUrl, string? error)> FetchAndParseDirectUrlAsync(
+        string pageUrl, CancellationToken ct)
+    {
+        try
+        {
+            using var verifyClient = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+            verifyClient.DefaultRequestHeaders.Add("User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+
+            var response = await verifyClient.GetAsync(pageUrl, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                return (null, $"HTTP {(int)response.StatusCode} when fetching page HTML");
+            }
+
+            var html = await response.Content.ReadAsStringAsync(ct);
+            var directUrl = ParseDirectImageUrl(html);
+            if (string.IsNullOrWhiteSpace(directUrl))
+            {
+                return (null, "Failed to parse direct image URL from HTML page");
+            }
+
+            return (directUrl, null);
+        }
+        catch (Exception ex)
+        {
+            return (null, $"Error fetching page HTML: {ex.Message}");
+        }
+    }
+
+    public static string? ParseDirectImageUrl(string html)
+    {
+        if (string.IsNullOrWhiteSpace(html)) return null;
+
+        // Method 1: parse input id="direct" value="xxx"
+        var directMatch = System.Text.RegularExpressions.Regex.Match(html, 
+            @"id=""direct""\s+value=""([^""]+)""", 
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (directMatch.Success) return directMatch.Groups[1].Value;
+
+        // Method 2: parse <meta property="og:image" content="xxx">
+        var ogMatch = System.Text.RegularExpressions.Regex.Match(html, 
+            @"<meta\s+property=""og:image""\s+content=""([^""]+)""", 
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (ogMatch.Success) return ogMatch.Groups[1].Value;
+
+        // Method 3: parse domain i.postimg.cc link pattern
+        var fallbackMatch = System.Text.RegularExpressions.Regex.Match(html, 
+            @"https?://i\.postimg\.cc/[a-zA-Z0-9]+/[^""\s>]+", 
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (fallbackMatch.Success) return fallbackMatch.Value;
+
+        return null;
+    }
 
     public void Dispose()
     {

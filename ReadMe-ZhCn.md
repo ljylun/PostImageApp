@@ -150,7 +150,7 @@ dotnet run --project PostImageUploader.csproj -- --help
 ```
 
 ### 输出规范
-- **成功**：在 `stdout` 中**仅**打印生成的 `postimg.cc` 永久访问直链（退出码为 `0`），极大地方便了脚本化和管道化（如 bash / pipeline）调用。
+- **成功**：在 `stdout` 中**仅**打印生成的包含原始图片后缀（如 `.jpg` 或 `.png`）的永久访问直链（退出码为 `0`），该链接是从页面 HTML 中解析出来的，极大地方便了脚本化和管道化（如 bash / pipeline）调用。
 - **失败**：在 `stderr` 中打印格式化错误前缀 `[ERROR]` 及原因（退出码为 `1` 或 `2`）。
 
 ---

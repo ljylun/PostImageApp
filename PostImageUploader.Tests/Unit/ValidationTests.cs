@@ -233,7 +233,7 @@ public class ValidationTests
     [InlineData("https://postimg.cc/abc123/hash",   true)]
     [InlineData("http://postimg.cc/abc123",         true)]
     [InlineData("HTTPS://POSTIMG.CC/abc",           true)]   // case-insensitive
-    [InlineData("https://i.postimg.cc/abc/img.png", false)]  // i.postimg.cc is CDN, different
+    [InlineData("https://i.postimg.cc/abc/img.png", true)]   // i.postimg.cc is direct image domain
     [InlineData("https://postimages.org/gallery",   false)]
     [InlineData("https://imgur.com/abc",            false)]
     [InlineData(null,                               false)]
@@ -254,6 +254,8 @@ public class ValidationTests
 
         Assert.False(r.Success);
         Assert.Null(r.ImageUrl);
+        Assert.Null(r.DirectImageUrl);
+        Assert.Null(r.PageUrl);
         Assert.Null(r.ErrorMessage);
         Assert.Equal(0, r.HttpStatusCode);
         Assert.Equal(0L, r.FileSizeBytes);
@@ -322,5 +324,55 @@ public class ValidationTests
         Assert.Contains("LinkNotAccessible",  values);
         Assert.Contains("EmptyResponse",      values);
         Assert.Contains("UnknownError",       values);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  Group 11: ParseDirectImageUrl Tests
+    // ═════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void ParseDirectImageUrl_InputIdDirect_ExtractsCorrectUrl()
+    {
+        var html = @"<html><body>
+            <input type=""text"" class=""form-control"" id=""direct"" value=""https://i.postimg.cc/V6Z83K1d/shang-hai-wu-kang-lu-ren-wu-pai-she.png"" readonly autocomplete=""off"">
+            </body></html>";
+
+        var result = PostImageClient.ParseDirectImageUrl(html);
+
+        Assert.Equal("https://i.postimg.cc/V6Z83K1d/shang-hai-wu-kang-lu-ren-wu-pai-she.png", result);
+    }
+
+    [Fact]
+    public void ParseDirectImageUrl_OgImageMeta_ExtractsCorrectUrl()
+    {
+        var html = @"<html><head>
+            <meta property=""og:image"" content=""https://i.postimg.cc/V6Z83K1d/shang-hai-wu-kang-lu-ren-wu-pai-she.png"">
+            </head></html>";
+
+        var result = PostImageClient.ParseDirectImageUrl(html);
+
+        Assert.Equal("https://i.postimg.cc/V6Z83K1d/shang-hai-wu-kang-lu-ren-wu-pai-she.png", result);
+    }
+
+    [Fact]
+    public void ParseDirectImageUrl_FallbackPattern_ExtractsCorrectUrl()
+    {
+        var html = @"<html><body>
+            <a href=""https://i.postimg.cc/V6Z83K1d/shang-hai.png"">Download</a>
+            </body></html>";
+
+        var result = PostImageClient.ParseDirectImageUrl(html);
+
+        Assert.Equal("https://i.postimg.cc/V6Z83K1d/shang-hai.png", result);
+    }
+
+    [Fact]
+    public void ParseDirectImageUrl_NoMatches_ReturnsNull()
+    {
+        var html = @"<html><body>No direct image links here</body></html>";
+
+        var result = PostImageClient.ParseDirectImageUrl(html);
+
+        Assert.Null(result);
     }
 }

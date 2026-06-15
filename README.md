@@ -150,7 +150,7 @@ dotnet run --project PostImageUploader.csproj -- --help
 ```
 
 ### Output Behavior
-- **On Success**: Prints only the permanent `postimg.cc` page URL to `stdout` (exit code `0`). This makes it highly scriptable (e.g., in bash pipelines).
+- **On Success**: Prints only the permanent **direct image URL** (parsed from the HTML, ending with the file extension suffix like `.jpg` or `.png`) to `stdout` (exit code `0`). This makes it highly scriptable (e.g., in bash pipelines).
 - **On Failure**: Prints a formatted error message prefix `[ERROR]` to `stderr` (exit code `1` or `2`).
 
 ---
