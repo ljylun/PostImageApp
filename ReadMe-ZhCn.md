@@ -18,6 +18,7 @@
 - [本地部署与启动](#本地部署与启动)
 - [项目结构说明](#项目结构说明)
 - [开发规范](#开发规范)
+- [Dafny 形式化验证](#dafny-形式化验证)
 - [常见问题排查](#常见问题排查)
 
 ---
@@ -73,6 +74,7 @@ PostImage Uploader 是一个使用 .NET 8 构建的健壮命令行工具，用�
 | **xunit.runner.visualstudio** | `2.5.3` | 测试运行器，使 xUnit 测试能在 .NET CLI 中执行 |
 | **Microsoft.NET.Test.Sdk** | `17.8.0` | MSBuild 测试目标和基础结构支持 |
 | **coverlet.collector** | `6.0.0` | 测试执行期间的代码覆盖率数据收集工具 |
+| **Dafny** | `4.x`（建议 4.5+） | 形式化验证工具链，用于验证 [`formal/`](formal) 目录下的规约模型（`dafny verify`） |
 
 ---
 
@@ -81,6 +83,7 @@ PostImage Uploader 是一个使用 .NET 8 构建的健壮命令行工具，用�
 | 依赖项 | 最低兼容版本 | 说明 |
 |--------|------------|------|
 | **.NET SDK** | **8.0.100** | 编译和运行项目所必需。[下载地址](https://dotnet.microsoft.com/download/dotnet/8.0) |
+| **Dafny**（可选） | **4.x** | 仅在需要验证 `formal/` 目录下的形式化模型时必需。[下载地址](https://dafny.org/downloads) |
 | **操作系统** | Windows 10 / macOS 12 / Ubuntu 20.04 | 任何支持 .NET 8 的操作系统均可 |
 | **互联网连接** | — | 必须能访问 `postimages.org` 和 `postimg.cc` |
 
@@ -169,6 +172,9 @@ PostImageApp/
 ├── README.md                      # 英文文档
 ├── ReadMe-ZhCn.md                 # 中文文档 (本文件)
 ├── documents/                     # 项目相关文档资料
+├── formal/                        # Dafny 形式化验证模型（*.dfy）
+│   ├── StringRepr.dfy             # 字符串表示层：用 seq<char> 建模 C# string
+│   └── charprobe.dfy              # 字符小写化的公理化探针（LowerPair / 幂等性）
 └── PostImageUploader.Tests/       # xUnit 测试项目
     ├── PostImageUploader.Tests.csproj # 引用 App.Core 及 Moq 的测试项目
     ├── Unit/                      # 单元测试
@@ -193,6 +199,53 @@ dotnet test PostImageUploader.sln
 
 # 仅运行单元测试
 dotnet test --filter "Category=Unit" PostImageUploader.sln
+```
+
+---
+
+## Dafny 形式化验证
+
+[`formal/`](formal) 目录存放 **Dafny** 规约模型，用于对 `App.Core` 中作用于字符串的纯逻辑（文件扩展名检查、大小写不敏感的 URL 前缀匹配、空白串处理等）进行形式化建模与验证。由于 Dafny 没有内置字符串类型，C# 的 `string` 统一用 `seq<char>`（字符序列）建模。
+
+### 模型文件
+
+| 文件 | 模块 | 内容 |
+|------|------|------|
+| `formal/StringRepr.dfy` | `StringRepr` | `Lower`（对应 `ToLowerInvariant`）、`StartsWithCI`（对应 `OrdinalIgnoreCase` 前缀匹配）、`IsBlank`（对应 `IsNullOrWhiteSpace`）、`ContainsSeq`、`GetExtension`（对应 `Path.GetExtension`），以及 `LowerIdempotent`、`LowerConcat`、`PrefixTransitive`、`ExtensionEmptyIffNoDot` 等引理。 |
+| `formal/charprobe.dfy` | `CharProbe` | 字符小写化的公理化探针：声明公理化映射 `LowerPair` 及其定义域/值域公理，并证明幂等性引理 `ProbeIdem`。 |
+
+### 前置依赖
+
+- **Dafny CLI 4.x**（建议 4.5 及以上版本）：从[官方下载页](https://dafny.org/downloads)安装（可用 `npm install -g dafny`、GitHub Release 压缩包或系统包管理器）。
+- Dafny 内部调用 **Z3** 定理器完成 SMT 求解；官方发行版已捆绑兼容的 Z3，一般无需单独安装。
+- 只有需要*编译/运行* Dafny 代码时才依赖 .NET SDK；仅做验证（verify）则不需要。
+
+### 运行验证
+
+在仓库根目录下执行：
+
+```bash
+# 验证 formal/ 下所有 .dfy 文件（推荐：整体验证全部模型）
+dafny verify formal/*.dfy
+
+# 单独验证某个模型文件
+dafny verify formal/StringRepr.dfy
+
+# 若在较慢机器上证明确认超时，可提高资源上限
+dafny verify formal/*.dfy --resource-limit 100
+```
+
+验证成功时输出形如 `0 errors, 21 verified` 的按文件汇总（具体数字以当前模型内容为准）。若出现非零错误数，说明某条证明义务未通过，应先修正模型或引理，再合入对应的 C# 逻辑改动。
+
+> 说明：每个 `.dfy` 文件都是自包含的（例如 `charprobe.dfy` 自行声明了公理化映射 `LowerPair`），因此可以逐文件独立验证，无需额外的 include 参数。上述文件均使用 Dafny 4 语法（`predicate`、`function`、`lemma`、`ensures Result ...`），不支持 Dafny 3.x。
+
+### 可选：编译并执行 Dafny 代码
+
+当前模型均为纯规约（specification-only）。如果后续添加了可执行的 `method Main`，可以这样运行：
+
+```bash
+dafny run formal/StringRepr.dfy          # 经 C# 后端即时执行
+dafny build formal/StringRepr.dfy        # 编译产出可执行程序集/二进制
 ```
 
 ---
