@@ -18,6 +18,7 @@
 - [Local Deployment & Setup](#local-deployment--setup)
 - [Project Structure](#project-structure)
 - [Development Guidelines](#development-guidelines)
+- [Formal Verification with Dafny](#formal-verification-with-dafny)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -73,6 +74,7 @@ The project's technical choices are structured into four main categories:
 | **xunit.runner.visualstudio** | `2.5.3` | Test runner for executing xUnit tests within the .NET CLI. |
 | **Microsoft.NET.Test.Sdk** | `17.8.0` | MSBuild test targets and infrastructure. |
 | **coverlet.collector** | `6.0.0` | Code coverage data collection tool during testing. |
+| **Dafny** | `4.x` (4.5+ recommended) | Formal verification toolchain; verifies the specification models in the [`formal/`](formal) directory (`dafny verify`). |
 
 ---
 
@@ -81,6 +83,7 @@ The project's technical choices are structured into four main categories:
 | Dependency | Minimum Version | Notes |
 |------------|----------------|-------|
 | **.NET SDK** | **8.0.100** | Required to compile and run the project. [Download](https://dotnet.microsoft.com/download/dotnet/8.0) |
+| **Dafny** (optional) | **4.x** | Only required to verify the formal models in `formal/`. [Download](https://dafny.org/downloads) |
 | **Operating System** | Windows 10 / macOS 12 / Ubuntu 20.04 | Any OS with .NET 8 support |
 | **Internet Access** | — | Required to reach `postimages.org` and `postimg.cc` |
 
@@ -169,6 +172,9 @@ PostImageApp/
 ├── README.md                      # English documentation (this file)
 ├── ReadMe-ZhCn.md                 # Chinese documentation
 ├── documents/                     # Project documentation
+├── formal/                        # Dafny formal-verification models (*.dfy)
+│   ├── StringRepr.dfy             # String representation layer: seq<char> modeling of C# string
+│   └── charprobe.dfy              # Axiomatic char-lowering probe (LowerPair / idempotence)
 └── PostImageUploader.Tests/       # xUnit test project
     ├── PostImageUploader.Tests.csproj # Test project referencing App.Core and Moq
     ├── Unit/                      # Unit tests
@@ -193,6 +199,53 @@ dotnet test PostImageUploader.sln
 
 # Run unit tests only
 dotnet test --filter "Category=Unit" PostImageUploader.sln
+```
+
+---
+
+## Formal Verification with Dafny
+
+The [`formal/`](formal) directory contains **Dafny** specification models that formally describe the pure string-level logic used by `App.Core` (file-extension checks, case-insensitive URL prefix matching, MIME-related helpers, blank-string handling). Since Dafny has no built-in string type, C# `string` values are modeled as `seq<char>` character sequences.
+
+### Model Files
+
+| File | Module | Contents |
+|------|--------|----------|
+| `formal/StringRepr.dfy` | `StringRepr` | `Lower` (≈ `ToLowerInvariant`), `StartsWithCI` (≈ `OrdinalIgnoreCase` prefix match), `IsBlank` (≈ `IsNullOrWhiteSpace`), `ContainsSeq`, `GetExtension` (≈ `Path.GetExtension`), plus lemmas such as `LowerIdempotent`, `LowerConcat`, `PrefixTransitive`, and `ExtensionEmptyIffNoDot`. |
+| `formal/charprobe.dfy` | `CharProbe` | An axiomatic probe of character lowering: a `LowerPair` map with an axiomatized domain/range and the idempotence lemma `ProbeIdem`. |
+
+### Prerequisites
+
+- **Dafny CLI 4.x** (4.5 or later recommended): install from the [official downloads page](https://dafny.org/downloads) (`npm install -g dafny`, the GitHub release archives, or your OS package manager).
+- Dafny internally invokes **Z3** for SMT solving; the official release bundles a compatible Z3, so no separate installation is normally required.
+- The .NET SDK is needed only if you additionally want to *compile/run* Dafny code; verification alone does not require it.
+
+### Running Verification
+
+From the repository root:
+
+```bash
+# Verify every .dfy file under formal/ (recommended — verify all models together)
+dafny verify formal/*.dfy
+
+# Verify a single model file
+dafny verify formal/StringRepr.dfy
+
+# Increase resource limits if proofs time out on slower machines
+dafny verify formal/*.dfy --resource-limit 100
+```
+
+A successful run prints per-file summaries such as `0 errors, 21 verified` (the exact count depends on the current model contents). Any non-zero error count means a proof obligation failed and should be fixed in the model or its lemmas before merging changes to the corresponding C# logic.
+
+> Note: each `.dfy` file is self-contained (e.g., `charprobe.dfy` declares its own axiomatic `LowerPair` map), so single-file verification works without extra include flags. These files use Dafny 4 syntax (`predicate`, `function`, `lemma`, `ensures Result ...`); Dafny 3.x is not supported.
+
+### Optional: Compile & Execute Dafny Code
+
+The current models are specification-only, but if you add an executable `method Main`, you can compile and run them like this:
+
+```bash
+dafny run formal/StringRepr.dfy          # JIT-style execution via C# backend
+dafny build formal/StringRepr.dfy        # emit a compiled assembly/binary
 ```
 
 ---
